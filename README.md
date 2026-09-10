@@ -2,8 +2,8 @@
 # PAW LoRa Collar - Pet Tracking System  Real-time pet tracking using LoRa radio (5-10km range),  ESP32 gateway, and Flutter mobile app.
 ## ✅ What's REAL (Production-Ready)
 
-| Component | What's Real | Status |
-|-----------|------------|--------|
+| Component | What's Real |
+|-----------|------------|
 | Gateway | ESP32 firmware, LoRa RX, WiFi, MQTT publishing 
 | App | Flutter UI, Google Maps, MQTT subscription
 | QoS | QoS 1 for location, QoS 0 for status 
