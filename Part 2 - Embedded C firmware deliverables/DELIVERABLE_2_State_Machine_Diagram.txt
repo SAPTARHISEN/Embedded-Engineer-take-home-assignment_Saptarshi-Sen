@@ -1,0 +1,284 @@
+================================================================================
+ DELIVERABLE #2: STATE MACHINE DIAGRAM
+================================================================================
+
+PAW LORA COLLAR - APPLICATION STATE MACHINE
+Motion-triggered GPS + Periodic Backup Fix + LoRa Transmission
+
+================================================================================
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                         STATE MACHINE FLOWCHART                           ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+
+                              ╔══════════════════════╗
+                              ║     POWER ON / RESET ║
+                              ╚══════════════════════╝
+                                       │
+                                       ▼
+                    ╔═══════════════════════════════════╗
+                    ║  INITIALIZATION (application_init)║
+                    ║  • GPIO configuration             ║
+                    ║  • I2C init (GPS, Accel)          ║
+                    ║  • SPI init (LoRa)                ║
+                    ║  • UART init (Debug)              ║
+                    ║  • RTC setup (30-min alarm)       ║
+                    ╚═══════════════════════════════════╝
+                                       │
+                                       ▼
+                    ┌──────────────────────────────────────┐
+                    │  STATE_SLEEP (12µA quiescent)        │
+                    │                                      │
+                    │  • MCU in STOP2 deep sleep           │
+                    │  • RTC running (tracks time)         │
+                    │  • Motion interrupt (INT1) armed     │
+                    │  • 30-min alarm set                  │
+                    │                                      │
+                    │  Current: ~12µA                      │
+                    │  Duration: 10-30 minutes             │
+                    └──────────────────────────────────────┘
+                         │                        │
+                         │                        │
+                ┌────────┴────────┐       ┌──────┴───────┐
+                │                 │       │              │
+         CONDITION 1        CONDITION 2   │              │
+      Motion Detected    Timeout (30min)  │              │
+         (Fast Path)      (Backup Path)   │              │
+                │                 │       │              │
+                ▼                 ▼       │              │
+            ┌─────────┐       ┌─────────┐│              │
+            │ YES → │       │ YES → ││              │
+            └─────────┘       └─────────┘│              │
+                ▲                 ▲      │              │
+                │                 │      ▼              │
+                └─────────┬───────┘   ┌─────────┐       │
+                          │           │NO → Loop│       │
+                          │           └─────────┘       │
+                          │                             │
+                          ▼                             │
+    ╔════════════════════════════════════════════╗      │
+    ║   STATE_ACQUIRE_GPS (GPS active)           ║      │
+    ║                                            ║      │
+    ║   • GPS module enabled (MAX-M10S active)   ║      │
+    ║   • Request position fix                   ║      │
+    ║   • Wait for NMEA sentence (UART2)         ║      │
+    ║   • Parse latitude, longitude, accuracy    ║      │
+    ║   • Timeout protection (30 seconds)        ║      │
+    ║                                            ║      │
+    ║   Current: 25 mA                           ║      │
+    ║   Duration: 5-30 seconds                   ║      │
+    ╚════════════════════════════════════════════╝      │
+         │                  │                          │
+         │                  │                          │
+    SUCCESS?            TIMEOUT?                       │
+         │                  │                          │
+    ┌────▼────┐         ┌───▼──────┐                 │
+    │ Fix Got │         │No Fix    │                 │
+    │ ✓       │         │Use Last  │                 │
+    └────┬────┘         └───┬──────┘                 │
+         │                  │                         │
+         └──────────┬───────┘                         │
+                    │                                 │
+                    ▼                                 │
+    ╔════════════════════════════════════════════╗    │
+    ║  STATE_TRANSMIT_LORA (LoRa active)         ║    │
+    ║                                            ║    │
+    ║  • Build 10-byte compact payload:          ║    │
+    ║    - Device ID (2 bytes)                   ║    │
+    ║    - Latitude scaled 1e-6 (4 bytes)        ║    │
+    ║    - Longitude scaled 1e-6 (4 bytes)       ║    │
+    ║  • Configure SX1276 (915 MHz, SF9)         ║    │
+    ║  • Transmit via LoRa P2P                   ║    │
+    ║  • Read battery voltage (ADC)              ║    │
+    ║                                            ║    │
+    ║  Current: 500 mA (TX peak)                 ║    │
+    ║  Duration: 200 ms (SF9, 10 bytes)          ║    │
+    ╚════════════════════════════════════════════╝    │
+         │                                            │
+         ▼                                            │
+    ┌──────────────────────────────────────────────┐ │
+    │  STATE_RETURN_SLEEP (Housekeeping)           │ │
+    │  • Update last_fix_time                      │ │
+    │  • Print battery status                      │ │
+    │  • Clear motion interrupt flag               │ │
+    │  • Set RTC alarm for 30 minutes              │ │
+    │  • Disable GPS (backup mode)                 │ │
+    │  • Disable LoRa                              │ │
+    │                                              │ │
+    │  Duration: <100 ms                           │ │
+    └──────────────────────────────────────────────┘ │
+         │                                            │
+         └────────────────────┬──────────────────────┘
+                              │
+                              ▼
+                    ┌──────────────────────────────┐
+                    │  Back to STATE_SLEEP         │
+                    │  (Loop repeats)              │
+                    └──────────────────────────────┘
+
+
+================================================================================
+                         STATE TRANSITION TABLE
+================================================================================
+
+┌─────────────────────┬──────────────────┬──────────────────────────────────┐
+│ Current State       │ Transition       │ Next State / Action              │
+├─────────────────────┼──────────────────┼──────────────────────────────────┤
+│ STATE_SLEEP         │ Motion OR        │ → STATE_ACQUIRE_GPS              │
+│                     │ Timeout (30min)  │   (Fast path: ~10ms overhead)    │
+├─────────────────────┼──────────────────┼──────────────────────────────────┤
+│ STATE_SLEEP         │ No motion AND    │ → STATE_SLEEP (loop)             │
+│                     │ Timeout not yet  │   (RTC wakes on alarm)           │
+├─────────────────────┼──────────────────┼──────────────────────────────────┤
+│ STATE_ACQUIRE_GPS   │ Fix acquired     │ → STATE_TRANSMIT_LORA            │
+│                     │ (GPS locked)     │   (Update last_fix_time)         │
+├─────────────────────┼──────────────────┼──────────────────────────────────┤
+│ STATE_ACQUIRE_GPS   │ Timeout (30sec)  │ → STATE_TRANSMIT_LORA            │
+│                     │ (No fix)         │   (Use last known position)      │
+├─────────────────────┼──────────────────┼──────────────────────────────────┤
+│ STATE_TRANSMIT_LORA │ TX complete      │ → STATE_RETURN_SLEEP             │
+│                     │ (Success/fail)   │   (Housekeeping, then sleep)     │
+├─────────────────────┼──────────────────┼──────────────────────────────────┤
+│ STATE_RETURN_SLEEP  │ Always           │ → STATE_SLEEP                    │
+│                     │ (Unconditional)  │   (Loop continues)               │
+└─────────────────────┴──────────────────┴──────────────────────────────────┘
+
+
+================================================================================
+                        POWER CONSUMPTION PER CYCLE
+================================================================================
+
+Assuming 10-minute interval with motion-triggered update:
+
+TIME          STATE               CURRENT    DURATION       ENERGY
+──────────────────────────────────────────────────────────────────────
+00:00-09:25   STATE_SLEEP         12 µA      9 min 25 sec   1.88 mAh
+              (RTC + accel int)
+
+09:25-09:55   STATE_ACQUIRE_GPS   25 mA      30 seconds     0.21 mAh
+              (GPS active)
+
+09:55-10:00   STATE_TRANSMIT_LORA 500 mA     0.5 seconds    0.07 mAh
+              (LoRa TX @ 20dBm)
+
+10:00-10:05   STATE_RETURN_SLEEP  15 mA      5 seconds      0.02 mAh
+              (MCU processing)
+              
+──────────────────────────────────────────────────────────────────────
+TOTAL PER CYCLE (10 minutes):                               ~2.2 mAh
+
+DAILY (6 cycles):                                          ~13 mAh
+WEEKLY:                                                    ~91 mAh
+MONTHLY:                                                  ~390 mAh
+
+
+BATTERY LIFE (1000 mAh LiPo):
+  1000 mAh ÷ 13 mAh/day ≈ 77 days ← Optimistic
+  
+REALISTIC (accounting for GPS failures, GPS warm-up):
+  1000 mAh ÷ 72 mAh/day ≈ 14 days ✓
+
+
+================================================================================
+                       WAKE-UP DECISION LOGIC
+================================================================================
+
+while (true) {
+    current_time = RTC.getTime();
+    motion_detected = (PA0_EXTI_FLAG == 1);
+    time_since_fix = current_time - last_fix_time;
+    
+    CONDITION_1 = motion_detected;
+    CONDITION_2 = (time_since_fix >= 1800);  // 30 minutes
+    
+    if (CONDITION_1 OR CONDITION_2) {
+        WAKE_UP();
+        transition_to(STATE_ACQUIRE_GPS);
+    } else {
+        SLEEP();  // Stays in STOP2 until next interrupt
+    }
+}
+
+WAKE TRIGGERS:
+  ✓ LIS2DH motion interrupt (PA0 EXTI0) = Immediate wake
+  ✓ RTC alarm after 30 minutes = Scheduled wake
+  ✓ No other wakes = Minimal power drain
+
+
+================================================================================
+                      TIMEOUT PROTECTION
+================================================================================
+
+STATE_ACQUIRE_GPS:
+  GPS max wait: 30 seconds
+  If no fix after 30s → Use last known position
+  Prevents battery drain from searching for GPS
+
+STATE_TRANSMIT_LORA:
+  LoRa max transmit: 10 seconds (with retries)
+  If TX fails after 10s → Abort and return to sleep
+  Prevents stuck states
+
+STATE_SLEEP:
+  RTC will force wake every 30 minutes
+  No infinite sleep without update
+
+
+================================================================================
+                     ENERGY OPTIMIZATION DECISIONS
+================================================================================
+
+1. MOTION-TRIGGERED (Fast Path):
+   → Immediate GPS update when pet moves
+   → Responsive tracking for active pets
+   → Additional battery drain only on activity
+
+2. PERIODIC BACKUP (30-minute):
+   → Prevents "silent collar" periods
+   → Guarantees location update even if stationary
+   → Balances tracking latency vs. battery
+
+3. GPS TIMEOUT (30 seconds):
+   → Prevents GPS module from draining battery
+   → Falls back to last known position if no fix
+   → Acceptable latency for real-time tracking
+
+4. DEEP SLEEP (STOP2, 12µA):
+   → Lowest power mode with RTC running
+   → Wakes on accelerometer or RTC alarm
+   → ~99% of time in this mode
+
+5. COMPACT PAYLOAD (10 bytes):
+   → Minimal LoRa airtime (200ms vs 2+ seconds)
+   → Lower TX power requirement
+   → Fits in ISM band restrictions
+
+6. SF9 SPREADING FACTOR:
+   → Balance: 5-10 km range vs 200ms airtime
+   → More efficient than SF12 (4+ seconds)
+   → Acceptable for local tracking scenarios
+
+================================================================================
+                        EXPECTED BATTERY LIFE
+================================================================================
+
+10-Minute Update Intervals:
+  └─ 14 days on 1000 mAh LiPo
+
+30-Minute Update Intervals:
+  └─ 28 days on 1000 mAh LiPo ← Current setting
+
+60-Minute Update Intervals:
+  └─ 56 days on 1000 mAh LiPo
+
+Motion-Triggered Only:
+  └─ 20-40 days (depends on pet activity)
+
+Trade-offs:
+  • Longer intervals = Better battery but less frequent updates
+  • Motion-triggered = Best battery but reactive only
+  • 30-minute = Good balance of tracking + battery
+
+
+================================================================================

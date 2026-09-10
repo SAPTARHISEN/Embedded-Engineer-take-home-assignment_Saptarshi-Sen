@@ -1,0 +1,586 @@
+================================================================================
+ MQTT TOPIC & PAYLOAD SCHEMA - PAW COLLAR SYSTEM
+ WITH OPTIMAL QoS LEVELS & RATIONALE
+================================================================================
+
+================================================================================
+                          TOPIC HIERARCHY
+================================================================================
+
+CORE LOCATIONS TOPICS:
+────────────────────
+
+paw/collar/{device_id}/location
+  ├─ Description: Real-time collar location (GPS coordinates)
+  ├─ Publisher: ESP32 Gateway (receives from LoRa collar)
+  ├─ Subscriber: Mobile app (displays on map)
+  ├─ QoS: 1 (AT_LEAST_ONCE)
+  ├─ Retain: YES
+  └─ Update Frequency: Every 30 minutes or on motion trigger
+
+paw/collar/{device_id}/status
+  ├─ Description: Collar operational status (battery, signal, last fix)
+  ├─ Publisher: ESP32 Gateway (computed from location packets)
+  ├─ Subscriber: Mobile app (status bar), Backend (monitoring)
+  ├─ QoS: 0 (AT_MOST_ONCE)
+  ├─ Retain: NO
+  └─ Update Frequency: Every 30 minutes (with location)
+
+paw/collar/{device_id}/heartbeat
+  ├─ Description: Collar health telemetry (uptime, cycles, stats)
+  ├─ Publisher: LoRa Collar (periodically)
+  ├─ Subscriber: Backend logging, Debugging
+  ├─ QoS: 0 (AT_MOST_ONCE)
+  ├─ Retain: NO
+  └─ Update Frequency: Every 24 hours
+
+GATEWAY TOPICS:
+───────────────
+
+paw/gateway/{gateway_id}/status
+  ├─ Description: Gateway operational status (WiFi, MQTT, LoRa stats)
+  ├─ Publisher: ESP32 Gateway (periodic)
+  ├─ Subscriber: Monitoring, Dashboard
+  ├─ QoS: 0 (AT_MOST_ONCE)
+  ├─ Retain: NO
+  └─ Update Frequency: Every 30 minutes
+
+paw/gateway/{gateway_id}/heartbeat
+  ├─ Description: Gateway alive indicator (uptime, packet counts)
+  ├─ Publisher: ESP32 Gateway (periodic)
+  ├─ Subscriber: Infrastructure monitoring
+  ├─ QoS: 0 (AT_MOST_ONCE)
+  ├─ Retain: NO
+  └─ Update Frequency: Every 10 minutes
+
+APP TOPICS:
+───────────
+
+paw/app/{app_id}/subscribe
+  ├─ Description: App subscription/tracking requests
+  ├─ Publisher: Mobile app (on startup)
+  ├─ Subscriber: Backend (analytics)
+  ├─ QoS: 1 (AT_LEAST_ONCE)
+  ├─ Retain: NO
+  └─ Update Frequency: On-demand
+
+CONFIG TOPICS:
+──────────────
+
+paw/config/{device_id}/settings
+  ├─ Description: Collar configuration updates
+  ├─ Publisher: Backend admin (via gateway relay)
+  ├─ Subscriber: Collar (via gateway)
+  ├─ QoS: 1 (AT_LEAST_ONCE)
+  ├─ Retain: YES
+  └─ Update Frequency: On-demand
+
+
+================================================================================
+                        PAYLOAD SCHEMAS (JSON)
+================================================================================
+
+1. LOCATION UPDATE (paw/collar/{device_id}/location)
+   ──────────────────────────────────────────────
+
+PURPOSE: Primary tracking data - dog's position on map
+CRITICALITY: 🔴 CRITICAL - Must be guaranteed
+QoS LEVEL: 1 (AT_LEAST_ONCE) - Broker will retry if app doesn't ACK
+RETAIN: YES - New app subscribers immediately see last position
+LATENCY: <1 second (WiFi → App)
+
+Example JSON:
+{
+  "device_id": 1,                    /* Collar ID (0x0001-0xFFFF) */
+  "lat": 12.972442,                  /* Latitude (decimal degrees, WGS84) */
+  "lon": 77.580643,                  /* Longitude (decimal degrees, WGS84) */
+  "ts": 1735689600,                  /* Unix timestamp (when GPS acquired) */
+  "battery_mv": 3850,                /* Battery voltage in millivolts */
+  "battery_pct": 65,                 /* Battery percentage (0-100%) */
+  "accuracy": 4.5,                   /* GPS accuracy radius (±meters) */
+  "rssi": -95,                       /* LoRa signal strength (dBm, negative) */
+  "snr": 8.5,                        /* Signal-to-noise ratio (dB) */
+  "source": "gateway",               /* Data origin: gateway or cellular */
+  "gateway_id": "esp32_gw_01",       /* Which gateway received this */
+  "num_satellites": 10,              /* GPS satellites used for fix */
+  "altitude": 920.5,                 /* Altitude above sea level (meters) */
+  "hdop": 1.5,                       /* Horizontal dilution of precision */
+  "speed_kmh": 2.3,                  /* Movement speed if available */
+  "heading_deg": 145.0               /* Movement direction (0-360°) */
+}
+
+MINIMAL REQUIRED FIELDS:
+{
+  "device_id": 1,
+  "lat": 12.972442,
+  "lon": 77.580643,
+  "ts": 1735689600,
+  "battery_mv": 3850,
+  "source": "gateway"
+}
+
+NOTES:
+  • All coordinates in WGS84 (global standard)
+  • Latitude: -90 (south pole) to +90 (north pole)
+  • Longitude: -180 (west) to +180 (east)
+  • Battery %: 0-100% calculated from voltage (3000mV=0%, 4200mV=100%)
+  • RSSI is negative (stronger signal = less negative, e.g., -30 > -120)
+  • SNR in dB (higher is better, typical 5-15 dB for LoRa)
+  • Accuracy is radius in meters (±4.5m = 95% confidence)
+  • HDOP > 4 = poor quality GPS fix
+
+QoS RATIONALE (QoS 1):
+  ✓ Dog tracking is mission-critical
+  ✓ One lost packet = stale location on app
+  ✓ QoS 1 guarantees delivery via broker retry
+  ✓ App ACKs receipt, broker doesn't resend
+  ✓ Overhead: ~12 bytes per message for PUBACK
+  ✓ 6 updates/day = 72 bytes overhead (negligible)
+
+RETENTION RATIONALE (RETAIN=YES):
+  ✓ App launches → subscribes to location topic
+  ✓ Immediately receives RETAINED last message
+  ✓ Map shows dog's position INSTANTLY
+  ✓ Without retention: blank map for 30 minutes until next GPS fix
+  ✓ Storage: ~300 bytes per collar (negligible)
+  ✓ UX improvement: Immediate feedback on app launch
+
+───────────────────────────────────────────────────────────────────────────
+
+2. STATUS UPDATE (paw/collar/{device_id}/status)
+   ──────────────────────────────────────────
+
+PURPOSE: Collar health and operational status
+CRITICALITY: 🟡 INFORMATIONAL - Nice to have, not critical
+QoS LEVEL: 0 (AT_MOST_ONCE) - Best effort, no retry
+RETAIN: NO - Status is temporary, changes frequently
+LATENCY: Tolerate up to 1 minute loss
+
+Example JSON:
+{
+  "device_id": 1,
+  "status": "active",                /* State: active, sleeping, error */
+  "battery_mv": 3850,
+  "battery_pct": 65,
+  "battery_status": "healthy",       /* healthy, warning, critical */
+  "last_gps_fix": 1735689600,        /* Unix timestamp of last fix */
+  "last_lora_tx": 1735689610,        /* Unix timestamp of last LoRa TX */
+  "gps_fix_quality": "good",         /* good, fair, poor, none */
+  "motion_detected": true,           /* Recently detected motion */
+  "collar_temperature_c": 28.5,      /* Collar temperature if available */
+  "time_since_fix_minutes": 2,       /* Minutes since last GPS fix */
+  "lora_rssi_avg": -92,              /* Average LoRa signal strength */
+  "ts": 1735689615
+}
+
+QoS RATIONALE (QoS 0):
+  ✓ Status updates frequently (every 30 min with location)
+  ✓ If one message drops, next one in 30 min
+  ✓ QoS 0: No retry overhead, saves bandwidth
+  ✓ Informational only, doesn't affect core tracking
+  ✓ Reduces message count by 50% vs QoS 1
+
+RETENTION RATIONALE (RETAIN=NO):
+  ✓ Status becomes stale immediately
+  ✓ Showing old battery % on new app launch is misleading
+  ✓ App should only show current status
+  ✓ Reduces broker storage for temporary data
+
+───────────────────────────────────────────────────────────────────────────
+
+3. COLLAR HEARTBEAT (paw/collar/{device_id}/heartbeat)
+   ────────────────────────────────────────────────
+
+PURPOSE: Collar statistics and diagnostics (sent daily)
+CRITICALITY: 🟢 DEBUGGING - For system analysis only
+QoS LEVEL: 0 (AT_MOST_ONCE) - Lowest priority
+RETAIN: NO - Diagnostic data, not needed on app refresh
+LATENCY: Tolerate hours of delay
+
+Example JSON:
+{
+  "device_id": 1,
+  "uptime_seconds": 604800,          /* Seconds since collar power-on */
+  "cycles_completed": 1440,          /* Number of wake-sleep cycles */
+  "gps_attempts": 1500,              /* Total GPS fix attempts */
+  "gps_successes": 1480,             /* Successful GPS acquisitions */
+  "gps_timeout_count": 20,           /* Times GPS timed out (30s) */
+  "lora_tx_count": 1480,             /* LoRa packets transmitted */
+  "lora_tx_failed": 0,               /* Failed LoRa transmissions */
+  "motion_events": 8500,             /* Total motion interrupt events */
+  "motion_false_alarms": 42,         /* False motion detections */
+  "rssi_min": -120,                  /* Weakest signal ever received */
+  "rssi_max": -30,                   /* Strongest signal ever received */
+  "rssi_avg": -92,                   /* Average signal strength */
+  "temperature_min_c": 5.0,          /* Minimum temperature recorded */
+  "temperature_max_c": 45.0,         /* Maximum temperature recorded */
+  "battery_voltage_min": 3000,       /* Lowest voltage (discharge threshold) */
+  "crash_count": 0,                  /* Watchdog resets */
+  "firmware_version": "1.0.0",
+  "ts": 1735689600
+}
+
+QoS RATIONALE (QoS 0):
+  ✓ Diagnostic data, not required for app
+  ✓ Published once per 24 hours
+  ✓ Historical analysis only (backend logging)
+  ✓ QoS 0 saves overhead for non-critical telemetry
+
+───────────────────────────────────────────────────────────────────────────
+
+4. GATEWAY STATUS (paw/gateway/{gateway_id}/status)
+   ────────────────────────────────────────────────
+
+PURPOSE: ESP32 gateway operational status
+CRITICALITY: 🟡 OPERATIONAL - For monitoring only
+QoS LEVEL: 0 (AT_MOST_ONCE)
+RETAIN: NO
+UPDATE FREQUENCY: Every 30 minutes
+
+Example JSON:
+{
+  "gateway_id": "esp32_gw_01",
+  "status": "online",                /* online, offline, error */
+  "uptime_seconds": 2592000,         /* Seconds since boot */
+  "wifi_ssid": "MyHome-WiFi",
+  "wifi_rssi": -65,                  /* WiFi signal strength */
+  "mqtt_connected": true,            /* Connected to broker */
+  "mqtt_broker": "mqtt.example.com:1883",
+  "packets_received": 45000,         /* LoRa packets received */
+  "packets_decoded": 44980,          /* Successfully decoded */
+  "packets_failed": 20,              /* Decode failures */
+  "decode_success_rate": 99.96,      /* Percentage */
+  "active_collars": 23,              /* Unique collars heard */
+  "memory_free_bytes": 32768,        /* Free RAM */
+  "memory_used_percent": 45,         /* Heap usage % */
+  "temperature_c": 32.1,             /* ESP32 internal temp */
+  "mqtt_publish_errors": 0,          /* Failed MQTT publishes */
+  "ts": 1735689615
+}
+
+───────────────────────────────────────────────────────────────────────────
+
+5. GATEWAY HEARTBEAT (paw/gateway/{gateway_id}/heartbeat)
+   ───────────────────────────────────────────────────
+
+PURPOSE: Gateway is-alive periodic ping
+CRITICALITY: 🟢 MONITORING - Detect dead gateways
+QoS LEVEL: 0 (AT_MOST_ONCE)
+RETAIN: NO
+UPDATE FREQUENCY: Every 10 minutes
+
+Example JSON:
+{
+  "gateway_id": "esp32_gw_01",
+  "uptime_seconds": 2592000,
+  "mqtt_messages_published": 50000,
+  "lora_packets_processed": 45000,
+  "collars_seen_24h": 23,
+  "last_collar_timestamp": 1735689610,
+  "mqtt_latency_ms": 25,             /* Average MQTT publish latency */
+  "ts": 1735689615
+}
+
+
+================================================================================
+                        QoS LEVEL RATIONALE
+================================================================================
+
+WHY OPTIMAL QoS STRATEGY?
+──────────────────────────
+
+Different data types have different delivery requirements:
+
+LOCATION DATA (QoS 1):
+┌─────────────────────────────────────────────────────────────┐
+│ QoS 1 = AT_LEAST_ONCE (Broker retransmits if no ACK)        │
+│                                                             │
+│ Critical because:                                           │
+│  ✓ Dog lost? Location is the primary tracking data         │
+│  ✓ Missing one update = stale position for 30+ minutes    │
+│  ✓ App relies on this to rescue lost pet                   │
+│                                                             │
+│ Costs:                                                      │
+│  • Extra 12 bytes per message (PUBACK)                      │
+│  • 6 updates/day × 12 bytes = 72 bytes/day per collar      │
+│  • For 100 collars: 7.2 KB/day = 216 KB/year (negligible)  │
+│                                                             │
+│ Benefit:                                                    │
+│  • Guaranteed delivery even with network jitter            │
+│  • Retained message so new subscribers get position        │
+└─────────────────────────────────────────────────────────────┘
+
+STATUS DATA (QoS 0):
+┌─────────────────────────────────────────────────────────────┐
+│ QoS 0 = AT_MOST_ONCE (No retry, best effort)               │
+│                                                             │
+│ Acceptable because:                                         │
+│  ✓ Status updates with location (every 30 min)             │
+│  ✓ If one dropped, next status in 30 minutes               │
+│  ✓ Informational only (app shows battery, signal, etc.)   │
+│  ✓ Not critical to core tracking function                  │
+│                                                             │
+│ Costs:                                                      │
+│  • None! No ACK, no retry overhead                         │
+│  • Saves 50% bandwidth vs QoS 1                            │
+│                                                             │
+│ Benefit:                                                    │
+│  • Lower bandwidth, faster network                         │
+│  • Acceptable loss rate for non-critical data             │
+└─────────────────────────────────────────────────────────────┘
+
+HEARTBEAT DATA (QoS 0):
+┌─────────────────────────────────────────────────────────────┐
+│ QoS 0 = AT_MOST_ONCE (Fire and forget)                     │
+│                                                             │
+│ Acceptable because:                                         │
+│  ✓ Published every 10-24 hours                             │
+│  ✓ Diagnostic/telemetry only                               │
+│  ✓ Backend logging, not needed by app                      │
+│  ✓ Missing one heartbeat doesn't matter                    │
+│                                                             │
+│ Benefit:                                                    │
+│  • Minimal overhead for monitoring                         │
+│  • Can use for long-term trend analysis                    │
+└─────────────────────────────────────────────────────────────┘
+
+RETENTION STRATEGY:
+───────────────────
+
+Retain Location (YES):
+  WHY:
+    • App launches → subscribes to location topic
+    • Without retention → blank map until next GPS fix (30 min)
+    • With retention → instant position on app open
+    • Better UX: Immediate feedback
+  HOW:
+    • Broker stores last message
+    • New subscriber gets it immediately
+    • Old message replaced on next publish
+  STORAGE:
+    • ~300 bytes per collar × 100 collars = 30 KB (negligible)
+
+Don't Retain Status (NO):
+  WHY:
+    • Status changes every 30 minutes
+    • Showing old battery % on new app launch is misleading
+    • Status is temporary, not reference data
+  BENEFIT:
+    • Reduced broker storage
+    • App always shows current state
+
+Don't Retain Heartbeat (NO):
+  WHY:
+    • Heartbeat is periodic ping, not state data
+    • Old heartbeat has no value
+    • Broker should not store debug telemetry
+
+
+================================================================================
+                        BANDWIDTH COMPARISON
+================================================================================
+
+MESSAGE SIZES:
+
+Location update (QoS 1):
+  Publish frame: ~300 bytes
+  + PUBACK:     ~12 bytes
+  Total:        312 bytes
+
+Status update (QoS 0):
+  Publish frame: ~200 bytes
+  NO PUBACK:    0 bytes
+  Total:        200 bytes
+
+Heartbeat (QoS 0):
+  Publish frame: ~150 bytes
+  Total:        150 bytes
+
+DAILY CONSUMPTION (per collar, 30-minute intervals):
+
+With All QoS 1 (worst case):
+  Location: 312 × 6 = 1,872 bytes
+  Status:   312 × 6 = 1,872 bytes
+  Total:    3,744 bytes/day
+
+With Optimal QoS (QoS 1 location + QoS 0 status):
+  Location: 312 × 6 = 1,872 bytes
+  Status:   200 × 6 = 1,200 bytes (33% less!)
+  Total:    3,072 bytes/day
+
+SAVINGS: 672 bytes/day per collar = ~245 KB/year per collar
+
+For 100 collars:
+  All QoS 1:        374 KB/day = 136 MB/year
+  Optimal QoS:      307 KB/day = 112 MB/year
+  SAVINGS:          67 KB/day = 24 MB/year (18% reduction)
+
+At AWS IoT Core rates ($0.70/GB):
+  Savings = 24 MB/year × $0.70/1000 MB = $0.017/year
+  (Not significant, but principle is sound: use right tool for job)
+
+
+================================================================================
+                        TOPIC SUBSCRIPTION PATTERNS
+================================================================================
+
+MOBILE APP SUBSCRIPTIONS:
+
+Pattern 1: Single Collar Tracking
+  Topic: paw/collar/0001/location
+  QoS: 1
+  Why: Want guaranteed delivery for this specific dog
+
+Pattern 2: All User's Collars (Multi-device)
+  Topics: paw/collar/0001/location
+          paw/collar/0002/location
+          paw/collar/0005/location
+  QoS: 1 each
+  Why: Multiple pets in same family
+
+Pattern 3: With Status (Full Dashboard)
+  Location (QoS 1): paw/collar/0001/location
+  Status (QoS 0):   paw/collar/0001/status
+  Heartbeat (QoS 0):paw/collar/0001/heartbeat
+  Why: Detailed monitoring view
+
+Pattern 4: Wildcard (Community/Emergency)
+  Topic: paw/collar/+/location
+  QoS: 1
+  Why: Search for any lost dog (needs guarantee)
+  Note: Requires permission in ACL
+
+
+================================================================================
+                        MOSQUITTO BROKER CONFIGURATION
+================================================================================
+
+mosquitto.conf excerpt for PAW system:
+
+# Network
+listener 1883
+listener 8883
+certfile /etc/mosquitto/certs/server.crt
+keyfile /etc/mosquitto/certs/server.key
+
+# Authentication
+allow_anonymous false
+password_file /etc/mosquitto/passwd
+
+# Retention
+retain_available true
+max_queued_messages 1000
+
+# QoS
+max_inflight_messages 20      # Max concurrent QoS 1 messages
+
+# Performance
+max_connections -1
+max_packet_size 64000         # For larger payloads
+
+# Persistence
+persistence true
+persistence_location /var/lib/mosquitto/
+
+# Logging
+log_dest file /var/log/mosquitto/mosquitto.log
+log_type all
+
+# Message expiration (cleanup retained messages)
+message_expiration 86400000   # Keep for 1 day (24 hours)
+
+─────────────────────────────────────────────────────────────
+
+acl.conf (Access Control List):
+
+# Gateway access (ESP32)
+user gateway_user
+topic write paw/collar/+/location   # QoS 1, Retained
+topic write paw/collar/+/status     # QoS 0, Not retained
+topic write paw/collar/+/heartbeat  # QoS 0, Not retained
+topic write paw/gateway/+/status    # QoS 0, Not retained
+topic write paw/gateway/+/heartbeat # QoS 0, Not retained
+topic read paw/config/+/settings    # QoS 1, Retained
+
+# Mobile app access (read-only)
+user mobile_app_user
+topic read paw/collar/+/location    # Subscribe QoS 1
+topic read paw/collar/+/status      # Subscribe QoS 0 (optional)
+topic read paw/collar/+/heartbeat   # Subscribe QoS 0 (optional)
+topic write paw/app/+/subscribe     # Send subscription telemetry
+
+# Admin access
+user admin
+topic read #
+topic write #
+
+
+================================================================================
+                        DEPLOYMENT CHECKLIST
+================================================================================
+
+MQTT BROKER SETUP:
+□ Install Mosquitto or choose cloud provider
+□ Configure listener ports (1883 MQTT, 8883 MQTTS)
+□ Set up TLS certificates (for production)
+□ Configure authentication (username/password)
+□ Set retention policy (enable, 24-hour expiry)
+□ Configure ACL (access control per user)
+□ Test broker connectivity from gateway
+
+GATEWAY DEPLOYMENT:
+□ Flash ESP32 firmware with:
+  □ Location published with QoS 1 + Retain
+  □ Status published with QoS 0 + No Retain
+  □ Heartbeat published with QoS 0 + No Retain
+□ Configure MQTT credentials
+□ Configure LoRa module parameters
+□ Place in location with WiFi coverage
+□ Verify MQTT connections in logs
+
+MOBILE APP DEPLOYMENT:
+□ Implement MQTT subscription with QoS levels:
+  □ Subscribe to location with QoS 1 (guaranteed)
+  □ Subscribe to status with QoS 0 (optional)
+  □ Handle retained messages on subscribe
+□ Implement map updates
+□ Test on iOS/Android
+□ Verify battery/signal indicators
+
+MONITORING:
+□ Check MQTT broker traffic (should see locations with QoS 1)
+□ Verify retention working (kill/restart app, should see last location)
+□ Monitor gateway heartbeat (should see every 10 min)
+□ Check error logs for failed publishes
+
+
+================================================================================
+                            SUMMARY
+================================================================================
+
+OPTIMAL QoS STRATEGY:
+
+┌────────────────────┬─────┬────────┬──────────────────────────────────┐
+│ Data Type          │ QoS │ Retain │ Rationale                        │
+├────────────────────┼─────┼────────┼──────────────────────────────────┤
+│ Location           │  1  │  YES   │ CRITICAL - Must be guaranteed   │
+│ (Dog position)     │     │        │ Retained for instant app map    │
+├────────────────────┼─────┼────────┼──────────────────────────────────┤
+│ Status             │  0  │   NO   │ INFORMATIONAL - Acceptable loss │
+│ (Battery, signal)  │     │        │ Updates frequently, OK to skip  │
+├────────────────────┼─────┼────────┼──────────────────────────────────┤
+│ Heartbeat          │  0  │   NO   │ DEBUGGING - Lowest priority     │
+│ (Telemetry)        │     │        │ Historical data only            │
+├────────────────────┼─────┼────────┼──────────────────────────────────┤
+│ Config             │  1  │  YES   │ IMPORTANT - Device must receive │
+│ (Settings update)  │     │        │ Retained for device recovery    │
+└────────────────────┴─────┴────────┴──────────────────────────────────┘
+
+BENEFITS:
+  ✓ Guaranteed delivery for critical data
+  ✓ 18% bandwidth reduction vs all QoS 1
+  ✓ Optimized for unreliable networks (cellular, WiFi)
+  ✓ Industry best practice
+  ✓ Zero additional complexity in code
+
+================================================================================
