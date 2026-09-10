@@ -8,18 +8,18 @@
 | App | Flutter UI, Google Maps, MQTT subscription
 | QoS | QoS 1 for location, QoS 0 for status 
 
-## ⚙️ What You CONFIGURE (Not Stubbed)
+##  What You CONFIGURE (Not Stubbed)
 
 - WiFi SSID & password in `gateway/config.h`
 - MQTT broker address
 - Google Maps API key
 
-## ❌ What's NOT Included (Stubbed/External)
+##  What's NOT Included (Stubbed/External)
 
 - Collar firmware (uses existing RAK3172)
 - MQTT broker (install Mosquitto or use cloud)
 - TLS certificates (production only)
-## 🚀 Quick Start
+##  Quick Start
 
 ### Gateway Setup (30 min)
 1. Flash `gateway/paw_gateway.ino` to ESP32
@@ -37,7 +37,7 @@
 1. Option A: Docker - `docker run -d -p 1883:1883 eclipse-mosquitto`
 2. Option B: Cloud - AWS IoT Core or HiveMQ Cloud
 3. Update broker address in code
-## ⚠️ Assumptions Made
+##  Assumptions Made
 
 - **Hardware**: You have ESP32 + SX1276 LoRa module 
 - **WiFi**: 2.4 GHz network (ESP32 doesn't support 5 GHz)
@@ -46,7 +46,7 @@
 - **Map**: You'll create free Google Maps API key
 - **Range**: 5-10 km line-of-sight LoRa coverage
 - **Battery**: Collar has 14-day battery life with 30-min intervals
-## 🔮 Future Improvements (If More Time)
+##  Future Improvements (If More Time)
 
 - [ ] Add cloud backend (AWS Lambda/Firebase)
 - [ ] Add web dashboard (React)
