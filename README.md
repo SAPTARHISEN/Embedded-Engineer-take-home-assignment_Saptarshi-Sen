@@ -4,9 +4,9 @@
 
 | Component | What's Real | Status |
 |-----------|------------|--------|
-| Gateway | ESP32 firmware, LoRa RX, WiFi, MQTT publishing | ✅ 100% Real |
-| App | Flutter UI, Google Maps, MQTT subscription | ✅ 100% Real |
-| QoS | QoS 1 for location, QoS 0 for status | ✅ 100% Real |
+| Gateway | ESP32 firmware, LoRa RX, WiFi, MQTT publishing 
+| App | Flutter UI, Google Maps, MQTT subscription
+| QoS | QoS 1 for location, QoS 0 for status 
 
 ## ⚙️ What You CONFIGURE (Not Stubbed)
 
@@ -39,7 +39,7 @@
 3. Update broker address in code
 ## ⚠️ Assumptions Made
 
-- **Hardware**: You have ESP32 + SX1276 LoRa module (~$25)
+- **Hardware**: You have ESP32 + SX1276 LoRa module 
 - **WiFi**: 2.4 GHz network (ESP32 doesn't support 5 GHz)
 - **MQTT**: Running locally or in cloud
 - **Collar**: Using existing RAK3172 with LoRa firmware
